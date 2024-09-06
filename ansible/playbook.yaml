@@ -1,0 +1,189 @@
+---
+- hosts: raspi
+  connection: ssh
+  gather_facts: no
+  tasks:
+    ## ----- INIT
+    ## ---------- SETUP-INITIAL-CONFIG
+    - name: Update system
+      apt: 
+        name: "*"
+        state: latest
+        update_cache: yes
+        autoclean: yes
+        autoremove: yes
+        clean: yes
+
+    - name: Set hostname on /etc/hostname
+      hostname: 
+        name: {{ host }}
+
+    - name: Set node ips on /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: '\traspberrypi'
+        line: {{ host }}
+        backrefs: true
+
+    - name: Add cluster nodes entries on /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        state: present
+        line: {{ item }}
+      with_items:
+        - "192.168.23      raspi01 raspi01.local"
+        - "192.168.39      raspi02 raspi02.local"
+        - "192.168.41      raspi03 raspi03.local"
+
+    - name: Add timestamps on bash history
+      lineinfile:
+        path: /root/.bashrc
+        state: present
+        line: {{ item }}
+      with_items:
+        - "HISTTIMEFORMAT='%d/%m/%Y %T - '"
+
+    ## ---------- SETUP-PRE-REQS
+    - name: Disable IPv6 with sysctl
+      ansible.posix.sysctl:
+        name: "{{ item }}"
+        value: "1"
+        state: "present"
+        reload: "yes"
+      with_items:
+        - net.ipv6.conf.all.disable_ipv6
+        - net.ipv6.conf.default.disable_ipv6
+        - net.ipv6.conf.lo.disable_ipv6
+
+    - name: Create blacklist for ipv6 in modprobe
+      ansible.builtin.lineinfile:
+        dest: /etc/modprobe.d/blacklist-ipv6.conf
+        line: 'blacklist ipv6'
+        mode: '0644'
+        create: yes
+
+    - name: Flush iptables before changing to iptables-legacy
+      iptables:
+        flush: true
+
+    - name: Change iptables binaries to legacy
+      alternatives:
+        name: {{ item.name}}
+        path: {{ item.path }}
+      with_items: 
+        - { name: iptables, path: /usr/sbin/iptables-legacy}
+        - { name: ip6tables, path: /usr/sbin/ip6tables-legacy}
+
+    - name: Configure cmdline.txt
+      lineinfile:
+        path: /boot/cmdline.txt
+        regexp: '^((?!.*\bcgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory\b).*)$'
+        line: '\1 group_enable=cpuset cgroup_memory=1 cgroup_enable=memory'
+        backrefs: true
+
+    - name: Disable green leds 
+      lineinfile:
+        path: /boot/config.txt
+        state: present
+        line: {{ item }}
+      with_items:
+        - "# Turn off Power LED"
+        - "dtparam=pwr_led_trigger=default-on"
+        - "dtparam=pwr_led_activelow=off"
+        - "# Turn off Activity LED"
+        - "dtparam=act_led_trigger=none"
+        - "dtparam=act_led_activelow=off"
+        - "# Turn off Ethernet ACT LED"
+        - "dtparam=eth_led0=4"
+        - "# Turn off Ethernet LNK LED"
+        - "dtparam=eth_led1=4"
+
+
+
+
+    ## ----- APPLY
+    ## ---------- SETUP-MASTER-NODE
+    RANDOM_TOKEN=$(openssl rand -hex 2048 | openssl dgst -sha3-512 | cut -d" " -f2 | tee /root/k3pi.token)
+    curl -sfL https://get.k3s.io | sh -s - \
+      --write-kubeconfig-mode 644 \
+      --token ${RANDOM_TOKEN} \
+      --node-taint CriticalAddonsOnly=true:NoExecute \
+      --bind-address raspi01.local \
+      --disable-cloud-controller \
+      --disable local-storage \
+      --disable traefik \
+      --debug \
+      --v 10 \
+      --log /var/log/k3s.log \
+      --alsologtostderr \
+      --cluster-cidr 10.100.0.0/24 \
+      --service-cidr 10.200.0.0/24 \
+      --cluster-dns 10.200.0.2 \
+      --service-node-port-range 30000-30256 \
+      --cluster-domain k3pi.local
+    kubectl wait --for=condition=available deploy/coredns -n kube-system
+    kubectl wait --for=condition=available deploy/metrics-server -n kube-system
+    kubectl wait --for=condition=available nodes --all
+
+    ## ---------- SETUP-WORKERS-NODES
+    ## join worker nodes
+    ansible -i inventory.ini master -b -m fetch -a "src=/root/k3pi.token dest=/tmp/ flat=true"
+    RANDOM_TOKEN=$(cat /tmp/k3pi.token)
+    ansible \
+      -i inventory.ini workers \
+      -e RANDOM_TOKEN=$(cat /tmp/k3pi.token) \
+      -b -m shell \
+      -a "curl -sfL https://get.k3s.io | K3S_URL=https://raspi01.local:6443 K3S_TOKEN=${RANDOM_TOKEN} sh -s - \
+        --debug \
+        --v 10 \
+        --log /var/log/k3s-setup.log \
+        --alsologtostderr"
+    kubectl wait --for=condition=available nodes --all
+    ## set labels on worker nodes
+    kubectl label nodes raspi02 kubernetes.io/role=worker
+    kubectl label nodes raspi03 kubernetes.io/role=worker
+    kubectl label nodes raspi02 node-type=worker
+    kubectl label nodes raspi03 node-type=worker
+    ## create flannel envfile
+    ansible -i inventory.ini k3pi -b -m stat -a "path=/run/flannel/subnet.env"
+    ansible -i inventory.ini master -b -m fetch -a "src=/run/flannel/subnet.env dest=/tmp/ flat=true"
+    ansible -i inventory.ini workers -b -m file -a "path=/run/flannel/ owner=root group=root mode=0755 state=directory"
+    ansible -i inventory.ini workers -b -m copy -a "src=/tmp/subnet.env dest=/run/flannel/subnet.env owner=root group=root mode=0644"
+
+    ## ---------- POST-INSTALL-CLUSTER-SETUP
+    ## deploy metal-lb
+    ## deploy longhorn
+
+    ## ---------- POST-INSTALL-CLUSTER-SETUP
+    ## deploy cert-manager
+    ## deploy nginx-ingress
+
+    ## ---------- DEVELOPMENT-ENVIRONMENT
+    ## install util-tools: jq, yq, yamllint
+    ## install k8s-management-tools: kubectl, kubens, kubectx, k9s, helm, arkade
+    ## install krew and krew plugins: ctx, ns, example, foreach / datree, popeye  / blame, graph
+    ## setup alias and scripts
+
+    ## setup kubeconfig locally
+    ansible -i inventory.ini master -b -m fetch -a "src=/etc/rancher/k3s/k3s.yaml dest=/home/acardoso/.kube/configs/ flat=true"
+    mv ~/.kube/configs/k3s.yaml ~/.kube/configs/k3pi.yaml
+    sed -i "s/default/k3pi/g" ~/.kube/configs/k3pi.yaml && mkubeconfig
+
+
+
+
+
+    ## ---------- DESTROY
+    # reset-cluster
+    $(ls /usr/local/bin/*-uninstall.sh)
+    rm -fv $(whereis k3s cni containerd flannel calico rancher | grep ": " | tr -d " " | cut -d ":" -f2)
+    rm -fv /root/k3pi.token /var/log/k3s-setup.log
+    iptables -F
+
+    ## if using calico as cni
+    iptables-save | grep -i cali | iptables -F
+    iptables-save | grep -i cali | iptables -X
+    ip link delete vxlan.calico
+    ip route delete 10.100.0.0/26
+    ip route delete 10.100.0.128/26
+    ip route delete 10.100.0.64/26
