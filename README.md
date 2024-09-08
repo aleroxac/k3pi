@@ -16,10 +16,10 @@ Utility to automate terraforming a fully out-of-the-box k3s cluster using Raspbe
 
 ## Requirements
 - 3x Raspberry Pi 4 boards with 2GB of memory, 4 CPU cores
-- 3x SD Card with 16GB
-- 3x power supply 5V/3A with USB type-c conector
-- 3x ethernet patch cord CAT5-e
-- 1x Internet Modem or Switch with least 3x 10/100 Mbps ports available and least 1 uplink port
+- 3x SD Cards with 16GB
+- 3x Power supply 5V/3A with USB type-c connector
+- 3x Ethernet patch cord CAT5-e
+- 1x Internet Modem or Switch with at least 3x 10/100 Mbps ports available and at least 1 uplink port
 
 
 
