@@ -193,12 +193,3 @@ complexo
 
 - ci-platform: github-action-runner / gitlab-action-runner
 - cd-platform: argocd / fluxcd
-
-
-
-## References
-- reference-01
-- reference-02
-- reference-03
-- reference-04
-- reference-05
