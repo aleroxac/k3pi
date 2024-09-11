@@ -1,5 +1,5 @@
 # k3pi
-Utility to automate terraforming a fully out-of-the-box k3s cluster using Raspberry Pi as cluster nodes.
+Utility to automate terraforming a fully out-of-the-box k3s cluster using Raspberry Pi as nodes.
 
 
 
